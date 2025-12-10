@@ -745,6 +745,61 @@ try:
     
     return filtered_staff[0]
 
+
+def calculate_night_shift_priority(staff_data, shift_type):
+    """Tính điểm ưu tiên dựa trên mục tiêu ca đêm"""
+    if shift_type == 'night':
+        # Đối với ca đêm: ưu tiên người còn thiếu ca đêm so với mục tiêu
+        night_goal = staff_data.get('night_shift_goal', 0)
+        night_diff = night_goal - staff_data['night_shifts']
+        # Ưu tiên người còn thiếu nhiều ca đêm (night_diff dương lớn)
+        return -night_diff  # Âm để người có night_diff dương lớn lên đầu
+    else:
+        # Đối với ca ngày: ưu tiên người đã có nhiều ca đêm hơn mục tiêu
+        night_goal = staff_data.get('night_shift_goal', 0)
+        night_diff = staff_data['night_shifts'] - night_goal
+        # Ưu tiên người đã vượt mục tiêu ca đêm (night_diff dương)
+        return -night_diff
+
+
+def calculate_shift_balance_score(staff_data, shift_type, balance_shifts):
+    """Tính điểm cân bằng ca ngày/đêm"""
+    if not balance_shifts:
+        return 0
+    
+    day_shifts = staff_data['day_shifts']
+    night_shifts = staff_data['night_shifts']
+    diff = day_shifts - night_shifts
+    
+    if shift_type == 'day':
+        # Nếu đang chọn cho ca ngày, ưu tiên người có ít ca ngày hơn
+        return max(0, diff)
+    else:  # shift_type == 'night'
+        # Nếu đang chọn cho ca đêm, ưu tiên người có ít ca đêm hơn
+        return max(0, -diff)
+
+
+def update_staff_data(staff_data, staff, day, shift_type):
+    """Cập nhật thông tin nhân viên sau khi phân công"""
+    if shift_type == 'day':
+        staff_data[staff]['total_shifts'] += 1
+        staff_data[staff]['day_shifts'] += 1
+        staff_data[staff]['consecutive_night'] = 0
+    else:  # night
+        staff_data[staff]['total_shifts'] += 1
+        staff_data[staff]['night_shifts'] += 1
+        staff_data[staff]['consecutive_night'] += 1
+    
+    staff_data[staff]['last_shift'] = shift_type
+    staff_data[staff]['last_shift_day'] = day
+    staff_data[staff]['day_night_diff'] = staff_data[staff]['day_shifts'] - staff_data[staff]['night_shifts']
+    staff_data[staff]['last_assigned_day'] = day
+    
+    # Cập nhật tổng công hiện tại
+    staff_data[staff]['current_total_credits'] = (
+        staff_data[staff]['admin_credits'] + staff_data[staff]['total_shifts']
+    )
+
     def calculate_night_shift_priority(staff_data, shift_type):
         """Tính điểm ưu tiên dựa trên mục tiêu ca đêm"""
         if shift_type == 'night':
@@ -1648,3 +1703,4 @@ except Exception as e:
         st.code(traceback.format_exc())
 
     st.info("Vui lòng làm mới trang và thử lại. Nếu lỗi vẫn tiếp tục, hãy liên hệ với quản trị viên.")
+
