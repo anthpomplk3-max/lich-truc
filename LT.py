@@ -17,23 +17,23 @@ st.set_page_config(
 # Danh sách nhân viên với thứ tự ưu tiên tăng ca
 truong_kiep = [
     "Nguyễn Trọng Tình",
-    "Nguyễn Minh Đồng",
+    "Nguyễn Minh Dũng",
     "Ngô Quang Việt",
-    "Đặng Nhiệt Nam"
+    "Đặng Nhật Nam"
 ]
 
 van_hanh_vien = [
     "Trường Hoàng An",
-    "Lê Vũ Yinh Lợi",
-    "Nguyễn Cao Cuộng",
+    "Lê Vũ Vĩnh Lợi",
+    "Nguyễn Cao Cường",
     "Tân Văn Võ"
 ]
 
 all_staff = truong_kiep + van_hanh_vien
 
 # Thứ tự ưu tiên tăng ca
-overtime_priority_tk = ["Nguyễn Minh Đồng", "Ngô Quang Việt", "Nguyễn Trọng Tình", "Đặng Nhiệt Nam"]
-overtime_priority_vhv = ["Trường Hoàng An", "Lê Vũ Yinh Lợi", "Nguyễn Cao Cuộng", "Tân Văn Võ"]
+overtime_priority_tk = ["Nguyễn Minh Dũng", "Ngô Quang Việt", "Nguyễn Trọng Tình", "Đặng Nhật Nam"]
+overtime_priority_vhv = ["Trường Hoàng An", "Lê Vũ Vĩnh Lợi", "Nguyễn Cao Cường", "Tân Văn Võ"]
 
 # Tạo map ưu tiên
 overtime_priority_map = {}
@@ -1021,3 +1021,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
