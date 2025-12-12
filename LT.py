@@ -29,6 +29,16 @@ try:
 
     all_staff = truong_kiep + van_hanh_vien
 
+    # Danh sách ưu tiên tăng ca
+    overtime_priority_tk = ["Nguyễn Minh Dũng", "Ngô Quang Việt", "Nguyễn Trọng Tình", "Đặng Nhật Nam"]
+    overtime_priority_vhv = ["Trương Hoàng An", "Lê Vũ Vĩnh Lợi", "Nguyễn Cao Cường", "Trần Văn Võ"]
+
+    overtime_priority_map = {}
+    for idx, name in enumerate(overtime_priority_tk):
+        overtime_priority_map[name] = idx
+    for idx, name in enumerate(overtime_priority_vhv):
+        overtime_priority_map[name] = idx
+
     # Khởi tạo session state
     if 'schedule_created' not in st.session_state:
         st.session_state.schedule_created = False
@@ -104,14 +114,21 @@ try:
         st.info("""
         **QUY TẮC CỨNG:**
         1. Mỗi ca: 1 TK + 1 VHV
-        2. **Tổng công chuẩn: 17 công/người**
+        2. **Tổng công chuẩn: 17 công/người/tháng**
+           - Không vượt quá 17 nếu không có người đi công tác
+           - Có người đi công tác: nhân viên còn lại được tăng ca
         3. Không làm việc 24h liên tục (trừ ngày ĐT)
-        4. Tối đa 3 ca đêm liên tiếp
+        4. Tối đa 3 ca đêm liên tiếp (4 ca nếu mục tiêu ca đêm = 15)
         5. TK thay TK, VHV thay VHV (trừ khi cấp bách)
-        
+
+        **ƯU TIÊN TĂNG CA:**
+        - VHV: An → Lợi → Cường → Võ
+        - TK: Dũng → Việt → Tình → Nam
+
         **CÔNG TÁC ĐỘT XUẤT (TĂNG CA):**
         - Người đi công tác: tính công đi đường
         - Người ở nhà thay thế: **Được tính tăng ca** (Tổng công > 17)
+        - Ưu tiên tăng ca theo thứ tự trên, phân bổ luân phiên
         - Giữ nguyên lịch cũ, chỉ thay đổi từ ngày công tác
         """)
 
@@ -258,10 +275,12 @@ try:
             staff_data[staff]['total_shifts'] += 1
             staff_data[staff]['day_shifts'] += 1
             staff_data[staff]['consecutive_night'] = 0
+            staff_data[staff]['consecutive_day'] = staff_data[staff].get('consecutive_day', 0) + 1
         else:  # night
             staff_data[staff]['total_shifts'] += 1
             staff_data[staff]['night_shifts'] += 1
             staff_data[staff]['consecutive_night'] += 1
+            staff_data[staff]['consecutive_day'] = 0
         
         staff_data[staff]['last_shift'] = shift_type
         staff_data[staff]['last_shift_day'] = day
@@ -272,8 +291,12 @@ try:
         staff_data[staff]['current_total_credits'] = (
             staff_data[staff]['admin_credits'] + staff_data[staff]['total_shifts']
         )
+        
+        # Nếu tổng công lớn hơn 17, thì đây là ca tăng ca, tăng overtime_count
+        if staff_data[staff]['current_total_credits'] > 17:
+            staff_data[staff]['overtime_count'] = staff_data[staff].get('overtime_count', 0) + 1
 
-    def select_staff_for_role(available_staff, staff_data, day, shift_type, role_type, balance_shifts=True, last_days_mode=False, is_training_day=False, allow_overtime=False):
+    def select_staff_for_role(available_staff, staff_data, day, shift_type, role_type, balance_shifts=True, last_days_mode=False, is_training_day=False, allow_overtime=False, overtime_priority_map=None):
         """
         Chọn nhân viên phù hợp.
         allow_overtime=True: Cho phép chọn người đã đủ hoặc thừa 17 công (chế độ tăng ca/khẩn cấp).
@@ -303,9 +326,19 @@ try:
             if not allow_overtime and data['remaining_to_17'] <= 0:
                 continue
             
-            # Kiểm tra ca đêm liên tiếp (tối đa 3)
-            if shift_type == 'night' and data['consecutive_night'] >= 3:
-                continue
+            # Kiểm tra ca đêm liên tiếp (tối đa 3 hoặc 4 tùy mục tiêu)
+            if shift_type == 'night':
+                night_goal = data.get('night_shift_goal', 0)
+                max_consecutive_night = 4 if night_goal == 15 else 3
+                if data['consecutive_night'] >= max_consecutive_night:
+                    continue
+            
+            # Kiểm tra ca ngày liên tiếp (chỉ giới hạn nếu mục tiêu ca đêm là 15)
+            if shift_type == 'day':
+                night_goal = data.get('night_shift_goal', 0)
+                max_consecutive_day = 4 if night_goal == 15 else 100  # 100 tức là không giới hạn
+                if data.get('consecutive_day', 0) >= max_consecutive_day:
+                    continue
             
             # Kiểm tra không làm 24h liên tục (trừ ngày đào tạo)
             if shift_type == 'night' and not is_training_day and data['last_shift'] == 'day' and data['last_shift_day'] == day:
@@ -322,16 +355,27 @@ try:
             return None
         
         # Sắp xếp ưu tiên
-        # Priority 1: -remaining_to_17 (Người còn thiếu nhiều công xếp trước. Người âm công (overtime) xếp sau)
-        # Vì vậy, khi allow_overtime=True, nó vẫn ưu tiên lấp đầy người chưa đủ công trước.
-        filtered_staff.sort(key=lambda x: (
-            -staff_data[x]['remaining_to_17'],  # Quan trọng nhất: ưu tiên người thiếu công
-            staff_data[x]['total_shifts'],      # Ưu tiên người ít ca
-            calculate_night_shift_priority(staff_data[x], shift_type),
-            calculate_shift_balance_score(staff_data[x], shift_type, balance_shifts),
-            0 if staff_data[x]['last_assigned_day'] is None else (day - staff_data[x]['last_assigned_day']),
-            random.random()
-        ))
+        if allow_overtime:
+            # Ưu tiên cho tăng ca: ít overtime_count trước, sau đó đến thứ tự trong danh sách ưu tiên
+            filtered_staff.sort(key=lambda x: (
+                staff_data[x].get('overtime_count', 0),  # Ưu tiên người ít tăng ca nhất
+                overtime_priority_map.get(x, 999) if overtime_priority_map else 999,  # Ưu tiên theo danh sách
+                staff_data[x]['total_shifts'],      # Ưu tiên người ít ca
+                calculate_night_shift_priority(staff_data[x], shift_type),
+                calculate_shift_balance_score(staff_data[x], shift_type, balance_shifts),
+                0 if staff_data[x]['last_assigned_day'] is None else (day - staff_data[x]['last_assigned_day']),
+                random.random()
+            ))
+        else:
+            # Sắp xếp như cũ
+            filtered_staff.sort(key=lambda x: (
+                -staff_data[x]['remaining_to_17'],  # Quan trọng nhất: ưu tiên người thiếu công
+                staff_data[x]['total_shifts'],      # Ưu tiên người ít ca
+                calculate_night_shift_priority(staff_data[x], shift_type),
+                calculate_shift_balance_score(staff_data[x], shift_type, balance_shifts),
+                0 if staff_data[x]['last_assigned_day'] is None else (day - staff_data[x]['last_assigned_day']),
+                random.random()
+            ))
         
         return filtered_staff[0]
 
@@ -362,6 +406,8 @@ try:
             staff_data[staff]['day_shifts'] = 0
             staff_data[staff]['night_shifts'] = 0
             staff_data[staff]['consecutive_night'] = 0
+            staff_data[staff]['consecutive_day'] = 0  # Thêm
+            staff_data[staff]['overtime_count'] = 0   # Thêm
             staff_data[staff]['last_shift'] = None
             staff_data[staff]['last_shift_day'] = None
         
@@ -393,7 +439,7 @@ try:
             staff_data[staff]['admin_credits'] = admin_credits
             staff_data[staff]['current_total_credits'] = admin_credits + staff_data[staff]['total_shifts']
 
-        # Xếp lịch mới từ start_day
+        # Xếp lịch mới từ start_day (luôn cho phép tăng ca vì có người đi công tác)
         for day in range(start_day, num_days + 1):
             if day == training_day: continue # Đã xử lý trong ngày đào tạo mặc định nếu có
             
@@ -404,22 +450,16 @@ try:
             available_tk = [s for s in truong_kiep if day not in staff_data[s]['unavailable_days']]
             available_vhv = [s for s in van_hanh_vien if day not in staff_data[s]['unavailable_days']]
             
-            # Chọn TK: Thử tìm người chưa đủ công (allow_overtime=False), nếu không có thì tìm người làm thêm (allow_overtime=True)
-            sel_tk = select_staff_for_role(available_tk, staff_data, day, 'day', 'TK', balance_shifts, last_days_mode, is_training_day, allow_overtime=False)
-            if not sel_tk:
-                sel_tk = select_staff_for_role(available_tk, staff_data, day, 'day', 'TK', balance_shifts, last_days_mode, is_training_day, allow_overtime=True)
+            # Chọn TK: Cho phép tăng ca (vì có công tác đột xuất)
+            sel_tk = select_staff_for_role(available_tk, staff_data, day, 'day', 'TK', balance_shifts, last_days_mode, is_training_day, allow_overtime=True, overtime_priority_map=overtime_priority_map)
                 
             # Chọn VHV: Tương tự
-            sel_vhv = select_staff_for_role(available_vhv, staff_data, day, 'day', 'VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=False)
-            if not sel_vhv:
-                sel_vhv = select_staff_for_role(available_vhv, staff_data, day, 'day', 'VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=True)
+            sel_vhv = select_staff_for_role(available_vhv, staff_data, day, 'day', 'VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=True, overtime_priority_map=overtime_priority_map)
             
             # Nếu thiếu VHV, thử dùng TK thay thế
             if not sel_vhv and allow_tk_substitute_vhv and sel_tk:
                 avail_tk_sub = [s for s in available_tk if s != sel_tk]
-                sel_vhv = select_staff_for_role(avail_tk_sub, staff_data, day, 'day', 'TK_AS_VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=False)
-                if not sel_vhv:
-                    sel_vhv = select_staff_for_role(avail_tk_sub, staff_data, day, 'day', 'TK_AS_VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=True)
+                sel_vhv = select_staff_for_role(avail_tk_sub, staff_data, day, 'day', 'TK_AS_VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=True, overtime_priority_map=overtime_priority_map)
                 if sel_vhv:
                     staff_data[sel_vhv]['is_substituting_vhv'] = True
 
@@ -440,30 +480,30 @@ try:
                                and not (staff_data[s]['last_shift'] == 'day' and staff_data[s]['last_shift_day'] == day)]
 
             # Chọn TK Đêm
-            sel_tk_n = select_staff_for_role(avail_tk_night, staff_data, day, 'night', 'TK', balance_shifts, last_days_mode, is_training_day, allow_overtime=False)
-            if not sel_tk_n:
-                 sel_tk_n = select_staff_for_role(avail_tk_night, staff_data, day, 'night', 'TK', balance_shifts, last_days_mode, is_training_day, allow_overtime=True)
+            sel_tk_n = select_staff_for_role(avail_tk_night, staff_data, day, 'night', 'TK', balance_shifts, last_days_mode, is_training_day, allow_overtime=True, overtime_priority_map=overtime_priority_map)
 
             # Chọn VHV Đêm
-            sel_vhv_n = select_staff_for_role(avail_vhv_night, staff_data, day, 'night', 'VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=False)
-            if not sel_vhv_n:
-                sel_vhv_n = select_staff_for_role(avail_vhv_night, staff_data, day, 'night', 'VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=True)
+            sel_vhv_n = select_staff_for_role(avail_vhv_night, staff_data, day, 'night', 'VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=True, overtime_priority_map=overtime_priority_map)
 
             # Thay thế ban đêm
             if not sel_vhv_n and allow_tk_substitute_vhv and sel_tk_n:
                 avail_tk_sub_n = [s for s in avail_tk_night if s != sel_tk_n]
-                sel_vhv_n = select_staff_for_role(avail_tk_sub_n, staff_data, day, 'night', 'TK_AS_VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=False)
-                if not sel_vhv_n:
-                    sel_vhv_n = select_staff_for_role(avail_tk_sub_n, staff_data, day, 'night', 'TK_AS_VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=True)
+                sel_vhv_n = select_staff_for_role(avail_tk_sub_n, staff_data, day, 'night', 'TK_AS_VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=True, overtime_priority_map=overtime_priority_map)
                 if sel_vhv_n:
                     staff_data[sel_vhv_n]['is_substituting_vhv'] = True
 
             if sel_tk_n and sel_vhv_n:
                 update_staff_data(staff_data, sel_tk_n, day, 'night')
                 update_staff_data(staff_data, sel_vhv_n, day, 'night')
-                # Giới hạn 3 ca đêm
-                if staff_data[sel_tk_n]['consecutive_night'] > 3: staff_data[sel_tk_n]['consecutive_night'] = 3
-                if staff_data[sel_vhv_n]['consecutive_night'] > 3: staff_data[sel_vhv_n]['consecutive_night'] = 3
+                
+                # Giới hạn ca đêm liên tiếp
+                max_consecutive_tk = 4 if staff_data[sel_tk_n].get('night_shift_goal') == 15 else 3
+                max_consecutive_vhv = 4 if staff_data[sel_vhv_n].get('night_shift_goal') == 15 else 3
+                
+                if staff_data[sel_tk_n]['consecutive_night'] > max_consecutive_tk: 
+                    staff_data[sel_tk_n]['consecutive_night'] = max_consecutive_tk
+                if staff_data[sel_vhv_n]['consecutive_night'] > max_consecutive_vhv: 
+                    staff_data[sel_vhv_n]['consecutive_night'] = max_consecutive_vhv
                 
                 note = 'Điều chỉnh' + ('; TK thay VHV' if sel_vhv_n in truong_kiep else '')
                 new_schedule.append({
@@ -499,7 +539,8 @@ try:
             
             staff_data[staff] = {
                 'role': 'TK' if staff in truong_kiep else 'VHV',
-                'total_shifts': 0, 'day_shifts': 0, 'night_shifts': 0, 'consecutive_night': 0,
+                'total_shifts': 0, 'day_shifts': 0, 'night_shifts': 0, 
+                'consecutive_night': 0, 'consecutive_day': 0,
                 'last_shift': None, 'last_shift_day': None,
                 'target_shifts': required_shift_credits,
                 'night_shift_goal': night_shift_goals.get(staff, 0),
@@ -512,6 +553,7 @@ try:
                 'business_credits': business_credits, 'admin_credits': admin_credits,
                 'current_total_credits': admin_credits,
                 'is_tk': staff in truong_kiep, 'is_vhv': staff in van_hanh_vien,
+                'overtime_count': 0,  # Thêm trường đếm số lần tăng ca
             }
             staff_data[staff]['unavailable_days'].update(line_inspection_dict.get(staff, set()))
 
@@ -526,22 +568,23 @@ try:
             
             # --- CA NGÀY ---
             # Thử chế độ chuẩn (không overtime)
-            sel_tk = select_staff_for_role(available_tk, staff_data, day, 'day', 'TK', balance_shifts, last_days_mode, is_training_day, allow_overtime=False)
+            sel_tk = select_staff_for_role(available_tk, staff_data, day, 'day', 'TK', balance_shifts, last_days_mode, is_training_day, allow_overtime=False, overtime_priority_map=overtime_priority_map)
             # Nếu không tìm được và có người đi công tác (gây thiếu hụt), cho phép overtime
             if not sel_tk and has_business_trip:
-                sel_tk = select_staff_for_role(available_tk, staff_data, day, 'day', 'TK', balance_shifts, last_days_mode, is_training_day, allow_overtime=True)
+                sel_tk = select_staff_for_role(available_tk, staff_data, day, 'day', 'TK', balance_shifts, last_days_mode, is_training_day, allow_overtime=True, overtime_priority_map=overtime_priority_map)
             
-            sel_vhv = select_staff_for_role(available_vhv, staff_data, day, 'day', 'VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=False)
+            sel_vhv = select_staff_for_role(available_vhv, staff_data, day, 'day', 'VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=False, overtime_priority_map=overtime_priority_map)
             if not sel_vhv and has_business_trip:
-                sel_vhv = select_staff_for_role(available_vhv, staff_data, day, 'day', 'VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=True)
+                sel_vhv = select_staff_for_role(available_vhv, staff_data, day, 'day', 'VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=True, overtime_priority_map=overtime_priority_map)
             
             # Thay thế TK->VHV
             if not sel_vhv and allow_tk_substitute_vhv and sel_tk:
                 avail_tk_sub = [s for s in available_tk if s != sel_tk]
-                sel_vhv = select_staff_for_role(avail_tk_sub, staff_data, day, 'day', 'TK_AS_VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=False)
+                sel_vhv = select_staff_for_role(avail_tk_sub, staff_data, day, 'day', 'TK_AS_VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=False, overtime_priority_map=overtime_priority_map)
                 if not sel_vhv and has_business_trip:
-                     sel_vhv = select_staff_for_role(avail_tk_sub, staff_data, day, 'day', 'TK_AS_VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=True)
-                if sel_vhv: staff_data[sel_vhv]['is_substituting_vhv'] = True
+                     sel_vhv = select_staff_for_role(avail_tk_sub, staff_data, day, 'day', 'TK_AS_VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=True, overtime_priority_map=overtime_priority_map)
+                if sel_vhv: 
+                    staff_data[sel_vhv]['is_substituting_vhv'] = True
 
             if sel_tk and sel_vhv:
                 update_staff_data(staff_data, sel_tk, day, 'day')
@@ -560,26 +603,31 @@ try:
                  avail_tk_n = [s for s in truong_kiep if day not in staff_data[s]['unavailable_days'] and not (staff_data[s]['last_shift'] == 'day' and staff_data[s]['last_shift_day'] == day)]
                  avail_vhv_n = [s for s in van_hanh_vien if day not in staff_data[s]['unavailable_days'] and not (staff_data[s]['last_shift'] == 'day' and staff_data[s]['last_shift_day'] == day)]
 
-            sel_tk_n = select_staff_for_role(avail_tk_n, staff_data, day, 'night', 'TK', balance_shifts, last_days_mode, is_training_day, allow_overtime=False)
+            sel_tk_n = select_staff_for_role(avail_tk_n, staff_data, day, 'night', 'TK', balance_shifts, last_days_mode, is_training_day, allow_overtime=False, overtime_priority_map=overtime_priority_map)
             if not sel_tk_n and has_business_trip:
-                sel_tk_n = select_staff_for_role(avail_tk_n, staff_data, day, 'night', 'TK', balance_shifts, last_days_mode, is_training_day, allow_overtime=True)
+                sel_tk_n = select_staff_for_role(avail_tk_n, staff_data, day, 'night', 'TK', balance_shifts, last_days_mode, is_training_day, allow_overtime=True, overtime_priority_map=overtime_priority_map)
 
-            sel_vhv_n = select_staff_for_role(avail_vhv_n, staff_data, day, 'night', 'VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=False)
+            sel_vhv_n = select_staff_for_role(avail_vhv_n, staff_data, day, 'night', 'VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=False, overtime_priority_map=overtime_priority_map)
             if not sel_vhv_n and has_business_trip:
-                sel_vhv_n = select_staff_for_role(avail_vhv_n, staff_data, day, 'night', 'VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=True)
+                sel_vhv_n = select_staff_for_role(avail_vhv_n, staff_data, day, 'night', 'VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=True, overtime_priority_map=overtime_priority_map)
 
             if not sel_vhv_n and allow_tk_substitute_vhv and sel_tk_n:
                 avail_tk_sub_n = [s for s in avail_tk_n if s != sel_tk_n]
-                sel_vhv_n = select_staff_for_role(avail_tk_sub_n, staff_data, day, 'night', 'TK_AS_VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=False)
+                sel_vhv_n = select_staff_for_role(avail_tk_sub_n, staff_data, day, 'night', 'TK_AS_VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=False, overtime_priority_map=overtime_priority_map)
                 if not sel_vhv_n and has_business_trip:
-                     sel_vhv_n = select_staff_for_role(avail_tk_sub_n, staff_data, day, 'night', 'TK_AS_VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=True)
-                if sel_vhv_n: staff_data[sel_vhv_n]['is_substituting_vhv'] = True
+                     sel_vhv_n = select_staff_for_role(avail_tk_sub_n, staff_data, day, 'night', 'TK_AS_VHV', balance_shifts, last_days_mode, is_training_day, allow_overtime=True, overtime_priority_map=overtime_priority_map)
+                if sel_vhv_n: 
+                    staff_data[sel_vhv_n]['is_substituting_vhv'] = True
 
             if sel_tk_n and sel_vhv_n:
                 update_staff_data(staff_data, sel_tk_n, day, 'night')
                 update_staff_data(staff_data, sel_vhv_n, day, 'night')
-                if staff_data[sel_tk_n]['consecutive_night'] > 3: staff_data[sel_tk_n]['consecutive_night'] = 3
-                if staff_data[sel_vhv_n]['consecutive_night'] > 3: staff_data[sel_vhv_n]['consecutive_night'] = 3
+                
+                # Giới hạn 3 ca đêm (hoặc 4 nếu mục tiêu 15)
+                if staff_data[sel_tk_n]['consecutive_night'] > (4 if staff_data[sel_tk_n].get('night_shift_goal') == 15 else 3): 
+                    staff_data[sel_tk_n]['consecutive_night'] = 4 if staff_data[sel_tk_n].get('night_shift_goal') == 15 else 3
+                if staff_data[sel_vhv_n]['consecutive_night'] > (4 if staff_data[sel_vhv_n].get('night_shift_goal') == 15 else 3): 
+                    staff_data[sel_vhv_n]['consecutive_night'] = 4 if staff_data[sel_vhv_n].get('night_shift_goal') == 15 else 3
                 
                 note = ('Đào tạo + ' if is_training_day else '') + ('TK thay VHV' if sel_vhv_n in truong_kiep else '')
                 schedule.append({
@@ -703,6 +751,7 @@ try:
                     'Vai trò': data['role'] + (' (Thay VHV)' if data.get('is_substituting_vhv') else ''),
                     'Tổng công': total,
                     'Trạng thái': status,
+                    'Số lần tăng ca': data.get('overtime_count', 0),  # Thêm dòng này
                     'Đã trực': data['total_shifts'],
                     'Ca ngày': data['day_shifts'],
                     'Ca đêm': data['night_shifts'],
