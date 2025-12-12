@@ -17,23 +17,23 @@ st.set_page_config(
 # Danh sách nhân viên với thứ tự ưu tiên tăng ca
 truong_kiep = [
     "Nguyễn Trọng Tình",
-    "Nguyễn Minh Dũng",
+    "Nguyễn Minh Đồng",
     "Ngô Quang Việt",
-    "Đặng Nhật Nam"
+    "Đặng Nhiệt Nam"
 ]
 
 van_hanh_vien = [
     "Trường Hoàng An",
-    "Lê Vũ Vĩnh Lợi",
-    "Nguyễn Cao Cường",
+    "Lê Vũ Yinh Lợi",
+    "Nguyễn Cao Cuộng",
     "Tân Văn Võ"
 ]
 
 all_staff = truong_kiep + van_hanh_vien
 
 # Thứ tự ưu tiên tăng ca
-overtime_priority_tk = ["Nguyễn Minh Dũng", "Ngô Quang Việt", "Nguyễn Trọng Tình", "Đặng Nhật Nam"]
-overtime_priority_vhv = ["Trường Hoàng An", "Lê Vũ Vĩnh Lợi", "Nguyễn Cao Cường", "Tân Văn Võ"]
+overtime_priority_tk = ["Nguyễn Minh Đồng", "Ngô Quang Việt", "Nguyễn Trọng Tình", "Đặng Nhiệt Nam"]
+overtime_priority_vhv = ["Trường Hoàng An", "Lê Vũ Yinh Lợi", "Nguyễn Cao Cuộng", "Tân Văn Võ"]
 
 # Tạo map ưu tiên
 overtime_priority_map = {}
@@ -105,6 +105,7 @@ def update_staff_data(staff_data, staff, day, shift_type, is_training_day=False)
             # Ca ngày trong ngày đào tạo: không tính công trực thêm, chỉ tính công đào tạo
             staff_data[staff]['consecutive_night'] = 0
             staff_data[staff]['consecutive_day'] = staff_data[staff].get('consecutive_day', 0) + 1
+            # Không tăng total_shifts và current_total_credits
         else:
             # Ca đêm trong ngày đào tạo: tính công trực đêm (công đào tạo đã tính trong admin_credits)
             staff_data[staff]['total_shifts'] += 1
@@ -145,7 +146,7 @@ def update_staff_data(staff_data, staff, day, shift_type, is_training_day=False)
 def select_staff_for_role(available_staff, staff_data, day, shift_type, role_type, 
                          balance_shifts=True, last_days_mode=False, is_training_day=False, 
                          allow_overtime=False):
-    """Chọn nhân viên phù hợp"""
+    """Chọn nhân viên phù hợp - ĐÃ SỬA ĐIỀU KIỆN KIỂM TRA TĂNG CA"""
     if not available_staff:
         return None
     
@@ -168,11 +169,14 @@ def select_staff_for_role(available_staff, staff_data, day, shift_type, role_typ
         if role_type == 'TK_AS_VHV' and not data['is_tk']: 
             continue
         
-        # Đặc biệt cho ngày đào tạo: cho phép chọn bất kỳ ai cho ca ngày
+        # QUAN TRỌNG: Kiểm tra điều kiện tăng ca
+        # Ca ngày trong ngày đào tạo: không tính công trực, nên được chọn bất kể current_total_credits
+        # Các ca khác: nếu không cho phép tăng ca và current_total_credits >= 17 thì không được chọn
         if is_training_day and shift_type == 'day':
-            # Không kiểm tra remaining_to_17 cho ca ngày trong ngày đào tạo
+            # Ca ngày trong ngày đào tạo: luôn được chọn (không tính công trực)
             pass
-        elif not allow_overtime and data['remaining_to_17'] <= 0:
+        elif not allow_overtime and data['current_total_credits'] >= 17:
+            # Đã đủ hoặc vượt 17 công, không được chọn trừ khi cho phép tăng ca
             continue
         
         # Kiểm tra ca đêm liên tiếp
@@ -206,7 +210,7 @@ def select_staff_for_role(available_staff, staff_data, day, shift_type, role_typ
     
     # Sắp xếp ưu tiên
     if allow_overtime:
-        # Ưu tiên tăng ca
+        # Ưu tiên tăng ca: ít tăng ca trước, theo thứ tự ưu tiên, ít công trước
         filtered_staff.sort(key=lambda x: (
             staff_data[x].get('overtime_count', 0),
             overtime_priority_map.get(x, 999),
@@ -217,7 +221,7 @@ def select_staff_for_role(available_staff, staff_data, day, shift_type, role_typ
             random.random()
         ))
     else:
-        # Sắp xếp thông thường
+        # Sắp xếp thông thường: công còn nhiều trước, ít công trước, cân bằng ca đêm
         filtered_staff.sort(key=lambda x: (
             -staff_data[x]['remaining_to_17'],
             staff_data[x]['total_shifts'],
@@ -390,7 +394,7 @@ def generate_advanced_schedule(month, year, training_day, day_off_dict, business
         # --- CA NGÀY ---
         allow_overtime_today = allow_overtime_global
         
-        # Ngày đào tạo: cho phép chọn bất kỳ ai cho ca ngày
+        # Ngày đào tạo: cho phép chọn bất kỳ ai cho ca ngày (vì không tính công)
         if is_training_day:
             sel_tk = select_staff_for_role(available_tk, staff_data, day, 'day', 'TK', 
                                           balance_shifts, last_days_mode, is_training_day, 
@@ -400,6 +404,7 @@ def generate_advanced_schedule(month, year, training_day, day_off_dict, business
                                           balance_shifts, last_days_mode, is_training_day, 
                                           allow_overtime=allow_overtime_today)
             if not sel_tk and not allow_overtime_today:
+                # Thử tìm với tăng ca (chỉ khi không tìm được ai)
                 sel_tk = select_staff_for_role(available_tk, staff_data, day, 'day', 'TK', 
                                               balance_shifts, last_days_mode, is_training_day, 
                                               allow_overtime=True)
@@ -523,13 +528,22 @@ def generate_advanced_schedule(month, year, training_day, day_off_dict, business
                 st.warning(f"Không thể xếp ca đêm cho ngày {day}")
 
     # Tính tổng công cuối cùng
+    overtime_employees = []
     for staff in all_staff:
         # NGÀY ĐÀO TẠO: admin_credits đã bao gồm 1 công đào tạo
         staff_data[staff]['total_credits'] = staff_data[staff]['admin_credits'] + staff_data[staff]['total_shifts']
         staff_data[staff]['current_total_credits'] = staff_data[staff]['total_credits']
         
+        # Kiểm tra tăng ca
+        if staff_data[staff]['current_total_credits'] > 17:
+            overtime_employees.append(staff)
+        
         # Cập nhật số lần tăng ca
         st.session_state.overtime_counts[staff] = staff_data[staff].get('overtime_count', 0)
+    
+    # Cảnh báo nếu có tăng ca trong lịch gốc
+    if overtime_employees and not allow_overtime_global:
+        st.warning(f"⚠️ Có {len(overtime_employees)} nhân viên bị tăng ca: {', '.join(overtime_employees)}. Tổng công > 17. Vui lòng kiểm tra lại các ràng buộc (ngày nghỉ, công tác, kiểm tra đường dây).")
         
     return schedule, staff_data
 
@@ -555,7 +569,7 @@ def adjust_schedule_for_emergency(original_schedule, staff_stats, emergency_staf
     business_trip_copy[emergency_staff].extend(range(start_day, end_day + 1))
     business_trip_copy[emergency_staff] = sorted(list(set(business_trip_copy[emergency_staff])))
     
-    # Tạo lại toàn bộ lịch với thông tin mới
+    # Tạo lại toàn bộ lịch với thông tin mới (cho phép tăng ca)
     new_schedule, new_stats = generate_advanced_schedule(
         month, year, training_day, day_off_dict, business_trip_copy,
         line_inspection_groups, night_shift_goals, balance_shifts, 
@@ -819,6 +833,12 @@ def main():
                             
                             st.success(f"✅ Đã tạo lịch thành công cho tháng {month}/{year}!")
                             
+                            # Kiểm tra và cảnh báo nếu có tăng ca
+                            overtime_employees = [staff for staff, data in staff_data.items() 
+                                                if data['current_total_credits'] > 17]
+                            if overtime_employees:
+                                st.warning(f"⚠️ Có {len(overtime_employees)} nhân viên bị tăng ca: {', '.join(overtime_employees)}. Vui lòng kiểm tra lại các ràng buộc.")
+                            
                             st.info(f"""
                             **THÔNG TIN NGÀY ĐÀO TẠO (Ngày {training_day}):**
                             - Tất cả 8 nhân viên đều có **1 công đào tạo**
@@ -858,9 +878,11 @@ def main():
             stats_data = []
             for staff, data in st.session_state.staff_stats.items():
                 total = data['current_total_credits']
-                status = "✅" if total >= 17 else "❌"
+                status = "✅" if total == 17 else "❌"
                 if total > 17: 
                     status = "🔥 Tăng ca"
+                elif total < 17:
+                    status = "⚠️ Thiếu"
                 
                 stats_data.append({
                     'Nhân viên': staff,
@@ -908,9 +930,11 @@ def main():
             st.info("""
             **CHÚ THÍCH:**
             - ✅: Đủ 17 công
-            - ❌: Chưa đủ 17 công
-            - 🔥 Tăng ca: Trên 17 công
+            - ⚠️ Thiếu: Dưới 17 công
+            - 🔥 Tăng ca: Trên 17 công (thay người đi công tác)
             - Đào tạo: Tất cả đều có 1 công
+            - Kiểm tra: Số ngày kiểm tra đường dây (nếu có)
+            - Công tác: Số ngày đi công tác (nếu có)
             """)
         else:
             st.info("ℹ️ Vui lòng tạo lịch ở Tab 2 trước để xem thống kê.")
@@ -943,6 +967,7 @@ def main():
                 )
             
             st.info(f"⚠️ {emergency_staff} sẽ đi công tác từ ngày {start_day} đến {end_day}")
+            st.info("📝 Lịch sẽ được tính lại từ đầu với tăng ca được phép.")
             
             col_act1, col_act2 = st.columns(2)
             with col_act1:
@@ -1021,4 +1046,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
